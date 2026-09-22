@@ -3,8 +3,8 @@
   "anthropic": { "api_key": "", "oauth_token": "" },
   "openrouter": { "api_key": "" },
   "huggingface": { "token": "" },
-  "ngrok": { "authtoken": "", "enabled": false },
-  "osiris": {
+  "ngrok": { "authtoken": "", "enabled": false, "replit_skip": true },
+  "ramibus_tradecraft": {
     "scanner_url": "",
     "scanner_key": "",
     "cloudflare_api_token": "",
@@ -14,7 +14,10 @@
     "opensky_client_id": "",
     "opensky_client_secret": "",
     "n2yo_api_key": "",
-    "ais_api_key": ""
+    "ais_api_key": "",
+    "searxng_url": "http://127.0.0.1:8080",
+    "tor_proxy": "",
+    "allowed_data_sources": ["keyless_public_feeds"]
   },
   "lmstudio": { "base_url": "http://localhost:11435" },
   "ollama": { "base_url": "http://localhost:11434" },
@@ -22,6 +25,10 @@
   "security": {
     "automatic_max_risk": "medium",
     "require_scope_check": true,
-    "allow_public_tunnel": false
+    "allow_public_tunnel": false,
+    "allow_privileged_tools": false,
+    "allow_package_install": false,
+    "egress_mode": "configured_only",
+    "audit_log_path": "backend/audit.log"
   }
 }
