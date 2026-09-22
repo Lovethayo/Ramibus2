@@ -1,22 +1,27 @@
 {
-  "openai": {
-    "api_key": "your_openai_api_key_here",
-    "oauth_token": ""
+  "openai": { "api_key": "", "oauth_token": "" },
+  "anthropic": { "api_key": "", "oauth_token": "" },
+  "openrouter": { "api_key": "" },
+  "huggingface": { "token": "" },
+  "ngrok": { "authtoken": "", "enabled": false },
+  "osiris": {
+    "scanner_url": "",
+    "scanner_key": "",
+    "cloudflare_api_token": "",
+    "etherscan_api_key": "",
+    "helius_api_key": "",
+    "firms_api_key": "",
+    "opensky_client_id": "",
+    "opensky_client_secret": "",
+    "n2yo_api_key": "",
+    "ais_api_key": ""
   },
-  "anthropic": {
-    "api_key": "your_anthropic_api_key_here",
-    "oauth_token": ""
-  },
-  "openrouter": {
-    "api_key": "your_openrouter_api_key_here"
-  },
-  "lmstudio": {
-    "base_url": "http://localhost:11435"
-  },
-  "ollama": {
-    "base_url": "http://localhost:11434"
-  },
-  "docker": {
-    "container": "rami-kali"
+  "lmstudio": { "base_url": "http://localhost:11435" },
+  "ollama": { "base_url": "http://localhost:11434" },
+  "docker": { "container": "rami-kali", "enabled": true },
+  "security": {
+    "automatic_max_risk": "medium",
+    "require_scope_check": true,
+    "allow_public_tunnel": false
   }
 }
