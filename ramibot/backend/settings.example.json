@@ -1,26 +1,32 @@
 {
-  "openai": { "api_key": "", "oauth_token": "" },
+  "ai": {
+    "active_provider": "local_gguf",
+    "fallback_provider": "lmstudio",
+    "allow_remote_apis": true
+  },
+  "local_gguf": {
+    "planner_model": "rami-planner",
+    "tradecraft_model": "rami-tradecraft",
+    "llama_cpp_binary": "llama-server",
+    "model_path": "",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "context_size": 8192,
+    "gpu_layers": -1
+  },
+  "lmstudio": { "base_url": "http://localhost:1234/v1" },
+  "openai": { "api_key": "", "oauth_token": "", "base_url": "https://api.openai.com/v1" },
   "anthropic": { "api_key": "", "oauth_token": "" },
-  "openrouter": { "api_key": "" },
+  "openrouter": { "api_key": "", "base_url": "https://openrouter.ai/api/v1" },
   "huggingface": { "token": "" },
   "ngrok": { "authtoken": "", "enabled": false, "replit_skip": true },
   "ramibus_tradecraft": {
     "scanner_url": "",
     "scanner_key": "",
-    "cloudflare_api_token": "",
-    "etherscan_api_key": "",
-    "helius_api_key": "",
-    "firms_api_key": "",
-    "opensky_client_id": "",
-    "opensky_client_secret": "",
-    "n2yo_api_key": "",
-    "ais_api_key": "",
     "searxng_url": "http://127.0.0.1:8080",
     "tor_proxy": "",
     "allowed_data_sources": ["keyless_public_feeds"]
   },
-  "lmstudio": { "base_url": "http://localhost:11435" },
-  "ollama": { "base_url": "http://localhost:11434" },
   "docker": { "container": "rami-kali", "enabled": true },
   "security": {
     "automatic_max_risk": "medium",
