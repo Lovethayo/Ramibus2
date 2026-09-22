@@ -1,0 +1,1 @@
+- [RAMIBUS integration boundaries](ramibus-integration.md) — preserve RamiBot while keeping world-data and unavailable-runtime states explicit.

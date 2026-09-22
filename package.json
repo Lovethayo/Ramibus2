@@ -1,0 +1,9 @@
+{
+  "name": "ramibus-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.26.1",
+  "dependencies": {
+    "maplibre-gl": "6.7.0"
+  }
+}

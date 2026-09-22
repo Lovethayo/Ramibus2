@@ -1,0 +1,55 @@
+kind = "web"
+previewPath = "/"
+title = "RAMIBUS"
+description = "A production control center for coordinating a planner/reviewer model, a cyber specialist model, local GGUF runtimes, adapters, shell execution, and MCP connections."
+version = "1.0.0"
+id = "artifacts/ramibus"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22544
+
+[services.development]
+run = "pnpm --filter @workspace/ramibus run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/ramibus", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/ramibus/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22544"
+BASE_PATH = "/"
+
+[[services]]
+name = "api"
+paths = [ "/api" ]
+localPort = 22545
+
+[services.development]
+run = "cd ../../ramibot/backend && ../../.pythonlibs/bin/uvicorn main:app --host 0.0.0.0 --port $PORT"
+
+[services.production]
+run = "cd ramibot/backend && ../../.pythonlibs/bin/uvicorn main:app --host 0.0.0.0 --port $PORT"
+
+
+[services.env]
+OSIRIS_API_URL = "http://127.0.0.1:22546"
+
+[[services]]
+name = "osiris"
+paths = [ "/internal/osiris" ]
+localPort = 22546
+
+[services.development]
+run = "bash -lc 'npm --prefix osiris ci --omit=dev --silent && npm --prefix osiris run dev -- --hostname 0.0.0.0 --port $PORT'"
+
+[services.production]
+build = [ "bash", "-lc", "npm --prefix osiris ci --omit=dev --silent && npm --prefix osiris run build" ]
+run = "npm --prefix osiris run start -- --hostname 0.0.0.0 --port $PORT"
