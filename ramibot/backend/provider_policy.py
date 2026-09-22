@@ -1,62 +1,30 @@
-"""Supported RAMIBUS AI provider contract.
+from __future__ import annotations
 
-RAMIBUS supports local llama.cpp/ GGUF, LM Studio, and configured remote AI APIs.
-Provider selection never installs or contacts a provider implicitly.
-"""
-
-SUPPORTED_PROVIDER_GROUPS = {
-    "local_llama_cpp": {"local_gguf"},
-    "lm_studio": {"lmstudio"},
-    "remote_api": {"openai", "anthropic", "openrouter"},
+SUPPORTED_PROVIDERS = {
+    'local_gguf': {'label': 'llama.cpp / GGUF', 'kind': 'local'},
+    'lmstudio': {'label': 'LM Studio', 'kind': 'local'},
+    'openai': {'label': 'OpenAI API', 'kind': 'api'},
+    'anthropic': {'label': 'Anthropic API', 'kind': 'api'},
+    'openrouter': {'label': 'OpenRouter API', 'kind': 'api'},
 }
+DEFAULT_PROVIDER = 'local_gguf'
+REMOTE_PROVIDERS = {'openai', 'anthropic', 'openrouter'}
 
 
-def provider_group(provider: str) -> str | None:
-    for group, names in SUPPORTED_PROVIDER_GROUPS.items():
-        if provider in names:
-            return group
-    return None
+def normalize_provider(provider: str | None) -> str:
+    value = (provider or '').strip().lower()
+    if value not in SUPPORTED_PROVIDERS:
+        raise ValueError(f'Unsupported AI provider: {provider}')
+    return value
 
 
-def is_supported_provider(provider: str) -> bool:
-    return provider_group(provider) is not None
+def select_provider(provider: str | None, *, allow_remote_apis: bool = True) -> str:
+    value = normalize_provider(provider or DEFAULT_PROVIDER)
+    if value in REMOTE_PROVIDERS and not allow_remote_apis:
+        raise ValueError(f'Remote AI providers are disabled: {value}')
+    return value
 
 
-def public_provider_inventory() -> list[dict]:
-    return [
-        {
-            "id": "local_gguf",
-            "group": "local_llama_cpp",
-            "label": "llama.cpp / GGUF",
-            "requires_api_key": False,
-            "requires_local_runtime": True,
-        },
-        {
-            "id": "lmstudio",
-            "group": "lm_studio",
-            "label": "LM Studio",
-            "requires_api_key": False,
-            "requires_local_runtime": True,
-        },
-        {
-            "id": "openai",
-            "group": "remote_api",
-            "label": "OpenAI API",
-            "requires_api_key": True,
-            "requires_local_runtime": False,
-        },
-        {
-            "id": "anthropic",
-            "group": "remote_api",
-            "label": "Anthropic API",
-            "requires_api_key": True,
-            "requires_local_runtime": False,
-        },
-        {
-            "id": "openrouter",
-            "group": "remote_api",
-            "label": "OpenRouter API",
-            "requires_api_key": True,
-            "requires_local_runtime": False,
-        },
-    ]
+def provider_payload(settings: dict) -> dict:
+    active = select_provider(settings.get('ai', {}).get('active_provider', DEFAULT_PROVIDER), allow_remote_apis=bool(settings.get('ai', {}).get('allow_remote_apis', True)))
+    return {'active_provider': active, 'supported': list(SUPPORTED_PROVIDERS), 'remote_enabled': active in REMOTE_PROVIDERS}
