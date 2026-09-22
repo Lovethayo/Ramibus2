@@ -1,216 +1,67 @@
 #!/usr/bin/env bash
-# =============================================================================
-# RamiBot — One-shot installer (Linux / macOS)
-# Usage: bash install.sh
-# =============================================================================
+# RAMIBUS adaptive installer for Linux, macOS, WSL, Replit, Colab, and VPS.
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
+source scripts/environment.sh
 
-RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
+cyan='\033[0;36m'; yellow='\033[1;33m'; green='\033[0;32m'; red='\033[0;31m'; reset='\033[0m'
+info(){ echo -e "${cyan}[ramibus]${reset} $*"; }
+warn(){ echo -e "${yellow}[ramibus]${reset} $*"; }
+ok(){ echo -e "${green}[ramibus]${reset} $*"; }
+die(){ echo -e "${red}[ramibus]${reset} $*" >&2; exit 1; }
 
-info()    { echo -e "${CYAN}[install]${NC} $*"; }
-success() { echo -e "${GREEN}[install]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[install]${NC} $*"; }
-error()   { echo -e "${RED}[install]${NC} $*"; }
+ramibus_print_environment
+[[ -n "$RAMIBUS_PYTHON" ]] || die "Python 3 is required. Install Python 3.9+ and rerun."
+[[ -n "$RAMIBUS_NODE" ]] || die "Node.js is required for the frontend. Install Node 18+ and rerun."
 
-# ── Detect docker compose command ────────────────────────────────────────────
-detect_compose() {
-    if docker compose version &>/dev/null 2>&1 || sudo docker compose version &>/dev/null 2>&1; then
-        echo "docker compose"
-    elif command -v docker-compose &>/dev/null; then
-        echo "docker-compose"
-    else
-        echo ""
-    fi
-}
+PY_MAJOR="$($RAMIBUS_PYTHON -c 'import sys; print(sys.version_info.major)')"
+PY_MINOR="$($RAMIBUS_PYTHON -c 'import sys; print(sys.version_info.minor)')"
+(( PY_MAJOR > 3 || (PY_MAJOR == 3 && PY_MINOR >= 9) )) || die "Python 3.9+ required."
+NODE_MAJOR="$(node --version | sed 's/^v//' | cut -d. -f1)"
+(( NODE_MAJOR >= 18 )) || die "Node.js 18+ required."
 
-# ── Check docker (with or without sudo) ──────────────────────────────────────
-docker_ok() {
-    docker info &>/dev/null 2>&1 || sudo docker info &>/dev/null 2>&1
-}
-
-# =============================================================================
-# 1. Prerequisite checks (collect ALL failures before aborting)
-# =============================================================================
-info "Checking prerequisites..."
-PREREQ_ERRORS=()
-
-# Python 3.9+
-if command -v python3 &>/dev/null; then
-    PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
-    PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
-    if [[ "$PY_MAJOR" -lt 3 ]] || ( [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 9 ]] ); then
-        PREREQ_ERRORS+=("Python 3.9+ required (found $PY_VER)")
-    else
-        info "  Python $PY_VER ... OK"
-    fi
-else
-    PREREQ_ERRORS+=("python3 not found — install Python 3.9+")
+# Colab/Replit are ephemeral and usually cannot run Docker. They still receive
+# the complete RAMIBUS app, providers, OSINT adapters, HF setup, and UI; only
+# the Docker-dependent rami-kali service is skipped.
+if [[ ! -x backend/.venv/bin/python ]]; then
+  info "Creating backend virtual environment..."
+  "$RAMIBUS_PYTHON" -m venv backend/.venv
 fi
+backend/.venv/bin/python -m pip install --upgrade pip >/dev/null
+backend/.venv/bin/python -m pip install -r backend/requirements.txt
 
-# Node 18+
-if command -v node &>/dev/null; then
-    NODE_VER=$(node --version | sed 's/v//')
-    NODE_MAJOR=$(echo "$NODE_VER" | cut -d. -f1)
-    if [[ "$NODE_MAJOR" -lt 18 ]]; then
-        PREREQ_ERRORS+=("Node.js 18+ required (found v$NODE_VER)")
-    else
-        info "  Node.js v$NODE_VER ... OK"
-    fi
-else
-    PREREQ_ERRORS+=("node not found — install Node.js 18+")
-fi
-
-# npm
-if command -v npm &>/dev/null; then
-    info "  npm $(npm --version) ... OK"
-else
-    PREREQ_ERRORS+=("npm not found — install npm")
-fi
-
-# Docker — install if missing, then start
-if ! command -v docker &>/dev/null; then
-    warn "  Docker not found — installing..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y docker.io docker-compose
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y docker docker-compose
-    elif command -v pacman &>/dev/null; then
-        sudo pacman -Sy --noconfirm docker docker-compose
-    fi
-fi
-
-if ! command -v docker &>/dev/null; then
-    PREREQ_ERRORS+=("Docker could not be installed — install manually: https://docs.docker.com/engine/install/")
-else
-    # Add current user to docker group (avoids needing sudo for docker commands)
-    if ! groups | grep -q docker; then
-        warn "  Adding $USER to docker group (no sudo needed after re-login)..."
-        sudo usermod -aG docker "$USER" || true
-    fi
-
-    # Ensure daemon is running
-    if docker_ok; then
-        info "  Docker (daemon running) ... OK"
-    else
-        warn "  Docker daemon not running — starting..."
-        if command -v systemctl &>/dev/null; then
-            sudo systemctl enable docker &>/dev/null || true
-            sudo systemctl start docker || true
-        elif command -v service &>/dev/null; then
-            sudo service docker start || true
-        fi
-        # Wait up to 20s for daemon to become ready
-        WAITED=0
-        while ! docker_ok; do
-            sleep 2; WAITED=$((WAITED+2))
-            [[ $WAITED -ge 20 ]] && break
-        done
-        if docker_ok; then
-            success "  Docker daemon started."
-        else
-            PREREQ_ERRORS+=("Docker daemon could not be started — run: sudo systemctl start docker")
-        fi
-    fi
-fi
-
-# Docker Compose
-COMPOSE_CMD=$(detect_compose)
-if [[ -n "$COMPOSE_CMD" ]]; then
-    info "  Docker Compose ($COMPOSE_CMD) ... OK"
-else
-    warn "  Docker Compose not found — attempting to install..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get install -y docker-compose-plugin &>/dev/null || \
-        sudo apt-get install -y docker-compose &>/dev/null || true
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y docker-compose-plugin &>/dev/null || \
-        sudo dnf install -y docker-compose &>/dev/null || true
-    elif command -v pacman &>/dev/null; then
-        sudo pacman -Sy --noconfirm docker-compose &>/dev/null || true
-    fi
-    COMPOSE_CMD=$(detect_compose)
-    if [[ -n "$COMPOSE_CMD" ]]; then
-        success "  Docker Compose installed ($COMPOSE_CMD)."
-    else
-        PREREQ_ERRORS+=("Docker Compose could not be installed — run: sudo apt-get install -y docker-compose")
-    fi
-fi
-
-if [[ ${#PREREQ_ERRORS[@]} -gt 0 ]]; then
-    error "Prerequisites check failed:"
-    for e in "${PREREQ_ERRORS[@]}"; do
-        error "  ✗ $e"
-    done
-    exit 1
-fi
-success "All prerequisites met."
-
-# =============================================================================
-# 2. Python virtual environment
-# =============================================================================
-if [[ ! -f "backend/.venv/bin/pip" ]]; then
-    [[ -d "backend/.venv" ]] && { warn "backend/.venv exists but is invalid (wrong platform?) — recreating..."; rm -rf backend/.venv; }
-    info "Creating Python virtual environment at backend/.venv ..."
-    python3 -m venv backend/.venv
-    success "Virtual environment created."
-else
-    info "backend/.venv already exists — skipping."
-fi
-
-# =============================================================================
-# 3. Backend dependencies
-# =============================================================================
-info "Installing backend Python dependencies..."
-backend/.venv/bin/pip install --quiet --upgrade pip
-backend/.venv/bin/pip install --quiet -r backend/requirements.txt
-success "Backend dependencies installed."
-
-# =============================================================================
-# 4. Frontend dependencies
-# =============================================================================
-info "Installing frontend npm dependencies..."
+info "Installing frontend dependencies..."
 (cd frontend && npm install --silent)
-success "Frontend dependencies installed."
 
-# =============================================================================
-# 5. Settings file (never overwrite)
-# =============================================================================
-if [[ ! -f "backend/settings.json" ]]; then
-    info "Copying backend/settings.example.json → backend/settings.json ..."
-    cp backend/settings.example.json backend/settings.json
-    warn "IMPORTANT: Edit backend/settings.json and add your API keys before starting."
-else
-    info "backend/settings.json already exists — skipping (your config is preserved)."
+if [[ ! -f backend/settings.json ]]; then
+  cp backend/settings.example.json backend/settings.json
+  warn "Created backend/settings.json. Add credentials in the RAMIBUS Settings UI."
 fi
 
-# =============================================================================
-# 6. Docker image build
-# =============================================================================
-info "Building rami-kali Docker image (this may take several minutes on first run)..."
-sudo docker build -t rami-kali rami-kali/
-success "Docker image built."
+if [[ "$RAMIBUS_CAN_RUN_DOCKER" == 1 ]]; then
+  if command -v docker compose >/dev/null 2>&1 || docker compose version >/dev/null 2>&1; then
+    info "Docker is available; building rami-kali..."
+    docker build -t rami-kali rami-kali/
+    docker compose -f rami-kali/docker-compose.yml up -d
+    ok "rami-kali is running."
+  else
+    warn "Docker daemon is available but Docker Compose is missing; skipping rami-kali."
+  fi
+else
+  warn "Skipping rami-kali: this environment has no usable Docker daemon."
+  warn "RAMIBUS remains usable for chat, OSINT, providers, and non-Docker capabilities."
+fi
 
-# =============================================================================
-# 7. Start container
-# =============================================================================
-info "Starting rami-kali container..."
-sudo $COMPOSE_CMD -f rami-kali/docker-compose.yml up -d
-success "rami-kali container is running."
+cat <<EOF
 
-# =============================================================================
-# Done
-# =============================================================================
-echo ""
-success "============================================================"
-success " RamiBot installation complete!"
-success "============================================================"
-echo ""
-echo -e "  ${YELLOW}Next steps:${NC}"
-echo "  1. Edit backend/settings.json — add your LLM API key(s)"
-echo "  2. Run:  bash start.sh"
-echo "  3. Open: http://localhost:5173"
-echo ""
+RAMIBUS setup complete for: $RAMIBUS_ENV
+Frontend: http://localhost:5173
+Backend:  http://localhost:8000/docs
+
+Next steps:
+  1. Start with: bash start.sh
+  2. Open Settings and add only the provider/data-source keys you own.
+  3. For Colab/Replit, configure HF_TOKEN and optionally NGROK_AUTHTOKEN in the environment.
+  4. Public URLs are never opened automatically; use the explicit tunnel setup flow.
+EOF

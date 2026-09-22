@@ -1,22 +1,40 @@
 {
-  "openai": {
-    "api_key": "your_openai_api_key_here",
-    "oauth_token": ""
+  "ai": {
+    "active_provider": "local_gguf",
+    "fallback_provider": "lmstudio",
+    "allow_remote_apis": true
   },
-  "anthropic": {
-    "api_key": "your_anthropic_api_key_here",
-    "oauth_token": ""
+  "local_gguf": {
+    "planner_model": "rami-planner",
+    "tradecraft_model": "rami-tradecraft",
+    "llama_cpp_binary": "llama-server",
+    "model_path": "",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "context_size": 8192,
+    "gpu_layers": -1
   },
-  "openrouter": {
-    "api_key": "your_openrouter_api_key_here"
+  "lmstudio": { "base_url": "http://localhost:1234/v1" },
+  "openai": { "api_key": "", "oauth_token": "", "base_url": "https://api.openai.com/v1" },
+  "anthropic": { "api_key": "", "oauth_token": "" },
+  "openrouter": { "api_key": "", "base_url": "https://openrouter.ai/api/v1" },
+  "huggingface": { "token": "" },
+  "ngrok": { "authtoken": "", "enabled": false, "replit_skip": true },
+  "ramibus_tradecraft": {
+    "scanner_url": "",
+    "scanner_key": "",
+    "searxng_url": "http://127.0.0.1:8080",
+    "tor_proxy": "",
+    "allowed_data_sources": ["keyless_public_feeds"]
   },
-  "lmstudio": {
-    "base_url": "http://localhost:11435"
-  },
-  "ollama": {
-    "base_url": "http://localhost:11434"
-  },
-  "docker": {
-    "container": "rami-kali"
+  "docker": { "container": "rami-kali", "enabled": true },
+  "security": {
+    "automatic_max_risk": "medium",
+    "require_scope_check": true,
+    "allow_public_tunnel": false,
+    "allow_privileged_tools": false,
+    "allow_package_install": false,
+    "egress_mode": "configured_only",
+    "audit_log_path": "backend/audit.log"
   }
 }

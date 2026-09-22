@@ -24,6 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from capability_registry import RAMIBUS_REGISTRY
+from runtime_policy import load_policy_from_settings
 from db.database import (
     init_db,
     create_conversation,
@@ -174,11 +176,11 @@ def _parse_hermes_tool_calls(text: str, available_tools: list) -> list:
         results.append({"id": f"hermes_{i}", "name": actual_name, "arguments": args})
 
     return results
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 
 mcp_client = MCPClient()
 
-# ── Tool Approval Gate ────────────────────────────────────────────────────────
+# ── Tool Approval Gate ───────────────────────────────────────────────────────
 _pending_approvals: dict[str, dict] = {}
 
 
@@ -196,7 +198,50 @@ def _get_risk_level(tool_name: str) -> str:
     except Exception:
         pass
     return "medium"
-# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _tool_capability_for_name(tool_name: str) -> str:
+    short_name = tool_name.split("__", 1)[-1] if "__" in tool_name else tool_name
+    lower = short_name.lower()
+    if any(token in lower for token in ("tunnel", "ngrok", "cloudflared", "public_url", "expose")):
+        return "public_tunnel"
+    if any(token in lower for token in ("install", "pip", "npm", "apt", "conda", "poetry", "uv", "pkg", "brew")):
+        return "package_install"
+    if any(token in lower for token in ("shell", "exec", "bash", "sh ", "powershell", "run_cmd")):
+        return "shell_exec"
+    if any(token in lower for token in ("docker", "container", "compose")):
+        return "docker_operations"
+    if any(token in lower for token in ("scan", "nmap", "probe", "port", "whois", "subdomain", "dns")):
+        return "network_scan"
+    return "world_intel"
+
+
+def _evaluate_runtime_capability(
+    tool_name: str,
+    *,
+    permissions: tuple[str, ...] = (),
+    risk: str | None = None,
+    allow_public_tunnel: bool = False,
+    allow_package_install: bool = False,
+) -> None:
+    cap_id = _tool_capability_for_name(tool_name)
+    capability = RAMIBUS_REGISTRY.get(cap_id)
+    if capability is None:
+        raise HTTPException(status_code=403, detail=f"Capability '{cap_id}' is not registered")
+
+    policy = load_policy_from_settings(load_settings())
+    decision = policy.evaluate(
+        capability=cap_id,
+        risk=risk or capability.risk,
+        permissions=permissions,
+        allow_public_tunnel=allow_public_tunnel,
+        allow_package_install=allow_package_install,
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=f"{cap_id}: {decision.reason}")
+
+
+# ────────────────────────────────────────────────────────────────
 
 
 def load_settings() -> dict:
@@ -209,6 +254,8 @@ def save_settings_file(data: dict):
     current = load_settings()
     current.update(data)
     SETTINGS_PATH.write_text(json.dumps(current, indent=2))
+    policy = load_policy_from_settings(current)
+    return policy
 
 
 def get_adapter(provider: str):
@@ -560,6 +607,13 @@ async def agents_route(message: str = Query(...), team_mode: str = Query("red"))
     return route_request(message, team_mode)
 
 
+# --- Runtime capability registry ---
+
+@app.get("/api/capabilities")
+async def list_runtime_capabilities():
+    return RAMIBUS_REGISTRY.list()
+
+
 # --- Conversations ---
 
 @app.get("/api/conversations")
@@ -663,13 +717,21 @@ async def chat(body: ChatRequest):
                 server_name, tool_name = "", name
             try:
                 args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
+                _evaluate_runtime_capability(
+                    name,
+                    permissions=("container_runtime",),
+                    risk=_get_risk_level(name),
+                    allow_public_tunnel=False,
+                    allow_package_install=False,
+                )
                 tool_result = await mcp_client.call_tool(server_name, tool_name, args)
                 tool_traces.append({"tool": name, "arguments": args, "result": tool_result})
+            except HTTPException:
+                raise
             except Exception as e:
                 tool_traces.append({"tool": name, "error": str(e)})
 
         if tool_traces:
-            # Build assistant message with tool_calls in OpenAI format
             assistant_msg = {"role": "assistant", "content": result["content"] or ""}
             assistant_msg["tool_calls"] = [
                 {
@@ -684,7 +746,6 @@ async def chat(body: ChatRequest):
             ]
             history.append(assistant_msg)
 
-            # Send tool results with role: "tool" and matching tool_call_id
             for i, trace in enumerate(tool_traces):
                 tc_id = tool_calls_data[i].get("id", f"call_{i}") if i < len(tool_calls_data) else f"call_{i}"
                 history.append({
@@ -766,7 +827,7 @@ async def chat_stream(body: ChatRequest):
         tool_calls_collected = []
         tool_traces = []
         my_approval_ids: list[str] = []
-        skip_approvals = False  # set to True when user clicks "Approve All"
+        skip_approvals = False
 
         try:
             yield {"event": "routing", "data": json.dumps({
@@ -796,7 +857,6 @@ async def chat_stream(body: ChatRequest):
                             server_name, tool_name = "", name
                         args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
 
-                        # ── Approval gate ──────────────────────────────────
                         execute_tool = True
                         if body.require_tool_approval and not skip_approvals:
                             approval_id = str(uuid.uuid4())
@@ -827,7 +887,6 @@ async def chat_stream(body: ChatRequest):
                             except asyncio.TimeoutError:
                                 _pending_approvals[approval_id]["expired"] = True
                                 execute_tool = False
-                        # ──────────────────────────────────────────────────
 
                         if not execute_tool:
                             trace = {"tool": name, "arguments": args, "error": "[TOOL EXECUTION DENIED BY USER]"}
@@ -835,8 +894,19 @@ async def chat_stream(body: ChatRequest):
                             yield {"event": "tool_result", "data": json.dumps(trace)}
                         else:
                             try:
+                                _evaluate_runtime_capability(
+                                    name,
+                                    permissions=("container_runtime",),
+                                    risk=_get_risk_level(name),
+                                    allow_public_tunnel=name.lower().find("tunnel") >= 0,
+                                    allow_package_install=name.lower().find("install") >= 0,
+                                )
                                 tool_result = await mcp_client.call_tool(server_name, tool_name, args)
                                 trace = {"tool": name, "arguments": args, "result": tool_result}
+                                tool_traces.append(trace)
+                                yield {"event": "tool_result", "data": json.dumps(trace)}
+                            except HTTPException as he:
+                                trace = {"tool": name, "arguments": args, "error": str(he.detail)}
                                 tool_traces.append(trace)
                                 yield {"event": "tool_result", "data": json.dumps(trace)}
                             except Exception as e:
@@ -854,11 +924,6 @@ async def chat_stream(body: ChatRequest):
                 elif etype == "done":
                     pass
 
-            # ── Hermes-format fallback ────────────────────────────────────────
-            # Some models (Llama/Hermes fine-tunes) emit tool calls as plain-text
-            # <tool_call> XML instead of using the structured tool interface.
-            # If no real tool_calls were captured but the content contains that XML,
-            # parse and execute them so the follow-up generation path runs normally.
             if not tool_calls_collected and mcp_tools:
                 full_text = "".join(content_parts)
                 hermes_calls = _parse_hermes_tool_calls(full_text, mcp_tools)
@@ -874,13 +939,21 @@ async def chat_stream(body: ChatRequest):
                         tool_name = parts[1] if len(parts) == 2 else name
                         args = tc["arguments"]
                         try:
+                            _evaluate_runtime_capability(
+                                name,
+                                permissions=("container_runtime",),
+                                risk=_get_risk_level(name),
+                                allow_public_tunnel=name.lower().find("tunnel") >= 0,
+                                allow_package_install=name.lower().find("install") >= 0,
+                            )
                             tool_result = await mcp_client.call_tool(server_name, tool_name, args)
                             trace = {"tool": name, "arguments": args, "result": tool_result}
+                        except HTTPException as he:
+                            trace = {"tool": name, "arguments": args, "error": str(he.detail)}
                         except Exception as e:
                             trace = {"tool": name, "error": str(e)}
                         tool_traces.append(trace)
                         yield {"event": "tool_result", "data": json.dumps(trace)}
-            # ─────────────────────────────────────────────────────────────────
 
             if tool_calls_collected and tool_traces and body.mcp_enabled:
                 follow_history = list(history)
@@ -891,8 +964,6 @@ async def chat_stream(body: ChatRequest):
                 for _hop in range(MAX_TOOL_HOPS):
                     if not pending_calls:
                         break
-
-                    # Append assistant message + tool results for this hop
                     hop_content = "".join(content_parts) or ""
                     assistant_msg = {
                         "role": "assistant",
@@ -923,7 +994,6 @@ async def chat_stream(body: ChatRequest):
                     if _hop == 0:
                         yield {"event": "clear_content", "data": "{}"}
 
-                    # Stream next generation (with tools so model can chain further)
                     next_calls: list = []
                     next_traces: list = []
                     async for event in adapter.stream(follow_history, model, **kwargs):
@@ -940,8 +1010,17 @@ async def chat_stream(body: ChatRequest):
                             _tname = _p[1] if len(_p) == 2 else _n
                             _args = json.loads(tc["arguments"]) if isinstance(tc["arguments"], str) else tc["arguments"]
                             try:
+                                _evaluate_runtime_capability(
+                                    _n,
+                                    permissions=("container_runtime",),
+                                    risk=_get_risk_level(_n),
+                                    allow_public_tunnel=_n.lower().find("tunnel") >= 0,
+                                    allow_package_install=_n.lower().find("install") >= 0,
+                                )
                                 _res = await mcp_client.call_tool(_srv, _tname, _args)
                                 _trace = {"tool": _n, "arguments": _args, "result": _res}
+                            except HTTPException as he:
+                                _trace = {"tool": _n, "arguments": _args, "error": str(he.detail)}
                             except Exception as _e:
                                 _trace = {"tool": _n, "error": str(_e)}
                             next_traces.append(_trace)
@@ -951,7 +1030,6 @@ async def chat_stream(body: ChatRequest):
                             token_usage = event["data"]
                             yield {"event": "usage", "data": json.dumps(token_usage)}
 
-                    # Hermes fallback for this hop's content
                     if not next_calls and mcp_tools:
                         _follow_text = "".join(content_parts)
                         _hermes = _parse_hermes_tool_calls(_follow_text, mcp_tools)
@@ -965,8 +1043,17 @@ async def chat_stream(body: ChatRequest):
                                 _srv = _p[0] if len(_p) == 2 else ""
                                 _tname = _p[1] if len(_p) == 2 else _n
                                 try:
+                                    _evaluate_runtime_capability(
+                                        _n,
+                                        permissions=("container_runtime",),
+                                        risk=_get_risk_level(_n),
+                                        allow_public_tunnel=_n.lower().find("tunnel") >= 0,
+                                        allow_package_install=_n.lower().find("install") >= 0,
+                                    )
                                     _res = await mcp_client.call_tool(_srv, _tname, tc["arguments"])
                                     _trace = {"tool": _n, "arguments": tc["arguments"], "result": _res}
+                                except HTTPException as he:
+                                    _trace = {"tool": _n, "arguments": tc["arguments"], "error": str(he.detail)}
                                 except Exception as _e:
                                     _trace = {"tool": _n, "error": str(_e)}
                                 next_traces.append(_trace)
@@ -1027,7 +1114,6 @@ async def get_skills_log(limit: int = Query(50)):
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     if not lines:
         return []
-    # Read last `limit` lines (most recent at end of file)
     tail = lines[-limit:]
     entries = []
     for line in reversed(tail):
@@ -1087,7 +1173,6 @@ async def reload_mcp_servers():
             args=srv.get("args", []),
             url=srv.get("url"),
         )
-        # Stop existing connection if live
         existing = mcp_client.servers.get(config.name)
         if existing:
             await existing.stop()
@@ -1120,9 +1205,18 @@ async def list_mcp_tools(server: str = Query(...)):
 @app.post("/api/mcp/call")
 async def call_mcp_tool(body: MCPCallRequest):
     try:
+        _evaluate_runtime_capability(
+            body.tool,
+            permissions=("container_runtime",),
+            risk=_get_risk_level(body.tool),
+            allow_public_tunnel=body.tool.lower().find("tunnel") >= 0,
+            allow_package_install=body.tool.lower().find("install") >= 0,
+        )
         result = await mcp_client.call_tool(body.server, body.tool, body.arguments)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     return result
@@ -1147,7 +1241,6 @@ async def update_scope(body: ScopeUpdate):
     if not CONFIG_PATH.exists():
         raise HTTPException(status_code=404, detail="rami-kali/config.yaml not found")
 
-    # Validate each CIDR
     for cidr in body.allowed_scope:
         try:
             ipaddress.ip_network(cidr, strict=False)
@@ -1160,9 +1253,6 @@ async def update_scope(body: ScopeUpdate):
     cfg["security"]["require_scope_check"] = body.require_scope_check
     CONFIG_PATH.write_text(yaml.dump(cfg, default_flow_style=False, allow_unicode=True), encoding="utf-8")
 
-    # Restart the container to pick up new config.
-    # Use run_in_executor + subprocess.run (same pattern as terminal.py —
-    # asyncio.create_subprocess_exec is unreliable on Windows).
     container = get_docker_container() or "rami-kali"
     try:
         import subprocess as _sp
@@ -1179,9 +1269,8 @@ async def update_scope(body: ScopeUpdate):
     except Exception as e:
         restart = f"failed: {e}"
 
-    # Reconnect MCP server after container restart so tools remain available.
     if restart == "ok":
-        await asyncio.sleep(3)  # wait for container to come up
+        await asyncio.sleep(3)
         RAMIKALI_NAME = "rami-kali"
         existing_conn = mcp_client.servers.get(RAMIKALI_NAME)
         if existing_conn:
@@ -1202,7 +1291,7 @@ class TerminalStartRequest(BaseModel):
 
 class TerminalInputRequest(BaseModel):
     session_id: str
-    data: str  # base64-encoded bytes
+    data: str
 
 class TerminalResizeRequest(BaseModel):
     session_id: str
@@ -1258,7 +1347,7 @@ async def terminal_stop(body: TerminalStopRequest):
 
 
 class TorActionRequest(BaseModel):
-    action: str  # "start" or "stop"
+    action: str
 
 
 @app.get("/api/docker/tor")
@@ -1276,8 +1365,18 @@ async def docker_tor_action(body: TorActionRequest):
     if not container:
         raise HTTPException(status_code=400, detail="No Docker container configured")
     if body.action == "start":
+        _evaluate_runtime_capability(
+            "docker_operations",
+            permissions=("docker", "container_runtime"),
+            risk="medium",
+        )
         result = await tor_start(container)
     elif body.action == "stop":
+        _evaluate_runtime_capability(
+            "docker_operations",
+            permissions=("docker", "container_runtime"),
+            risk="medium",
+        )
         result = await tor_stop(container)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
@@ -1290,7 +1389,6 @@ async def docker_tor_action(body: TorActionRequest):
 async def save_settings(request: Request):
     data = await request.json()
     save_settings_file(data)
-    # Update docker container if provided
     docker_cfg = data.get("docker", {})
     if docker_cfg:
         set_docker_container(docker_cfg.get("container", ""))
